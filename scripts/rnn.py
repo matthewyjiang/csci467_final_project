@@ -1,5 +1,6 @@
 import torch
 import math
+from tqdm import tqdm
 import pandas as pd
 from torch import nn
 from torch.autograd import Variable
@@ -9,6 +10,12 @@ import unicodedata
 import string
 
 n_categories = 2
+
+if torch.cuda.is_available(): 
+    dev = "cuda:0" 
+else: 
+    dev = "cpu" 
+device = torch.device(dev) 
 
 train_dataset = None
 dev_dataset = None
@@ -51,9 +58,9 @@ class Embeddings(nn.Module):
 
     def __init__(self, vocab_size, embedding_dim, context_size):
         super(Embeddings, self).__init__()
-        self.embeddings = nn.Embedding(vocab_size, embedding_dim)
-        self.linear1 = nn.Linear(context_size * embedding_dim, 64)
-        self.linear2 = nn.Linear(64, vocab_size)
+        self.embeddings = nn.Embedding(vocab_size, embedding_dim, device=device)
+        self.linear1 = nn.Linear(context_size * embedding_dim, 64, device=device)
+        self.linear2 = nn.Linear(64, vocab_size, device=device)
 
     def forward(self, inputs):
         embeds = self.embeddings(inputs).view((1, -1))
@@ -97,20 +104,14 @@ if __name__ == "__main__":
 
     #remove half the data
     
-    training_data = training_data[:math.floor(training_data.shape[0]/10)]
+    training_data = training_data[:math.floor(training_data.shape[0]/1000)]
 
     # tuple: (party, handle, tweet)
 
-    TRAIN_SIZE = math.floor(training_data.shape[0]*0.7)
-    DEV_SIZE = math.floor(training_data.shape[0]*0.1)
-    TEST_SIZE = training_data.shape[0]-TRAIN_SIZE-DEV_SIZE
+    
     
     CONTEXT_SIZE = 2  # 2 words to the left, 2 to the right
 
-
-    train_dataset = torch.utils.data.Subset(training_data, range(TRAIN_SIZE))
-    dev_dataset = torch.utils.data.Subset(training_data, range(TRAIN_SIZE, TRAIN_SIZE+DEV_SIZE))
-    test_dataset = torch.utils.data.Subset(training_data, range(TRAIN_SIZE+DEV_SIZE, TRAIN_SIZE+DEV_SIZE+TEST_SIZE))
 
     strings = training_data[:,2]
     # strings = [test_sentence]
@@ -124,44 +125,38 @@ if __name__ == "__main__":
     
     
     vocab_size = len(vocab)
-    print(vocab_size)
     
     
     ngrams = []
     for i in range(len(strings)):
         for j in range(len(strings[i])-CONTEXT_SIZE):
-            ngrams.append((strings[i][j:j+CONTEXT_SIZE],strings[i][j+CONTEXT_SIZE]))
-    
-    print(ngrams[:3])
+            ngrams.append(([vocab_index[word] for word in strings[i][j:j+CONTEXT_SIZE]], [vocab_index[strings[i][j+CONTEXT_SIZE]]]))
             
+    TRAIN_SIZE = math.floor(len(ngrams)*0.7)
+    DEV_SIZE = math.floor(len(ngrams)*0.1)
+    TEST_SIZE = len(ngrams)-TRAIN_SIZE-DEV_SIZE
+            
+    train_dataset = torch.utils.data.Subset(ngrams, range(TRAIN_SIZE))
+    dev_dataset = torch.utils.data.Subset(ngrams, range(TRAIN_SIZE, TRAIN_SIZE+DEV_SIZE))
+    test_dataset = torch.utils.data.Subset(ngrams, range(TRAIN_SIZE+DEV_SIZE, TRAIN_SIZE+DEV_SIZE+TEST_SIZE))
     
     model = Embeddings(vocab_size, 48, 2)
     criterion = nn.NLLLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-    
-    print("here")
-    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
 
     start = time.time()
     losses = []
     
-    count = 0
-    
-    print(len(ngrams))
-    
-    for epoch in range(10):
+    for epoch in range(15):
         total_loss = 0
-        for context, target in ngrams:
-            count+=1
-            if(count%100==0):
-                print(count)
+        for context, target in tqdm(train_dataset):
             
-            context_idxs = torch.tensor([vocab_index[w] for w in context], dtype=torch.long)
+            context_idxs = torch.tensor(context, dtype=torch.long, device=device)
             model.zero_grad()
             
             log_probs = model(context_idxs)
 
-            loss = criterion(log_probs, torch.tensor([vocab_index[target]], dtype=torch.long))
+            loss = criterion(log_probs, torch.tensor(target, dtype=torch.long, device=device))
 
             loss.backward()
             optimizer.step()
@@ -170,3 +165,17 @@ if __name__ == "__main__":
         losses.append(total_loss)
         print("epoch: ", epoch, " loss: ", total_loss)
     print(losses) 
+    
+    
+    # test model
+    
+    for context, target in test_dataset:
+        context_idxs = torch.tensor(context, dtype=torch.long, device=device)
+        log_probs = model(context_idxs)
+        print(log_probs)
+        print(target)
+        break
+    
+    # save model
+    
+    torch.save(model.state_dict(), "model.pt")
