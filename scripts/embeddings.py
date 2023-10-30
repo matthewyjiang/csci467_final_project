@@ -178,4 +178,4 @@ if __name__ == "__main__":
     
     # save model
     
-    torch.save(model.state_dict(), "model.pt")
+    torch.save(model.state_dict(), "embeddings_model.pt")
