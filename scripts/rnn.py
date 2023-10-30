@@ -40,6 +40,7 @@ class WordDataset(Dataset):
 
     def _build_vocab(self):
         for i, row in self.data.iterrows():
+            print(row['Tweet'])
             words = row['Tweet'].split()
             self.max_seq_len = max(self.max_seq_len, len(words))
             for word in words:
@@ -68,7 +69,7 @@ class LSTM(nn.Module):
         return self.softmax(x)
 
 # Load data
-data = pd.read_csv('../data/ExtractedTweets_new.csv', encoding='utf-8')
+data = pd.read_csv('../data/train_set.csv', encoding='utf-8')
 data = data.sample(frac=0.01, random_state=42)
 dataset = WordDataset(data)
 
