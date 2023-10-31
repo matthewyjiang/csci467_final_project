@@ -2,6 +2,7 @@ import argparse
 from collections import Counter, defaultdict
 import sys
 import csv
+import random
 from tqdm import tqdm
 import math
 
@@ -24,11 +25,11 @@ def read_data(filename):
         reader = csv.reader(f)
         next(reader)  # Skip the header
         for row in reader:
-            if len(row) != 3:  # Check if there are enough values in the row
+            if len(row) != 2:  # Check if there are enough values in the row
                 print(f"Warning: Skipping line due to unexpected format: {row}")
                 continue
-            party, handle, tweet = row
-            dataset.append((tweet.split(' '), handle))
+            party, tweet = row
+            dataset.append((tweet.split(' '), party))
     return dataset
 
 def get_vocabulary(dataset):
@@ -123,13 +124,13 @@ def evaluate(label_counts, word_counts, vocabulary, dataset, name, print_confusi
             num_correct += 1
 
     accuracy = 100 * num_correct / len(dataset)
-
+    party_names = {0: 'Democrat', 1: 'Republican'}
     # Use party names for output instead of integers
     print(f'{name} accuracy: {num_correct}/{len(dataset)} = {accuracy:.3f}%')
     if print_confusion_matrix:
-        print(''.join(['actual\\predicted'] + [party_names[label].rjust(12) for label in label_counts]))
+        print(''.join(['actual\\predicted'] + [party_names[int(label)].rjust(12) for label in label_counts]))
         for true_label in label_counts:
-            print(''.join([party_names[true_label].rjust(16)] + [
+            print(''.join([party_names[int(true_label)].rjust(16)] + [
                 str(confusion_counts[true_label, pred_label]).rjust(12)
                 for pred_label in label_counts]))
 
@@ -169,10 +170,12 @@ def analyze_counts(label_counts, word_counts, vocabulary):
 
 
 def main():
-    train_data = read_data('data/train_NB.csv')
-    dev_data = read_data('data/dev_NB.csv')
-    test_data = read_data('data/test_NB.csv')
-    newbooks_data = read_data('data/ExtractedTweets_new.csv')
+    temp_data = read_data('data/train_set.csv')
+    random.shuffle(temp_data)
+    train_data = temp_data[:math.ceil(len(temp_data)*(7/9))]
+    dev_data = temp_data[math.ceil(len(temp_data)*(7/9)):]
+    test_data = read_data('data/test_set.csv')
+    #newbooks_data = read_data('data/ExtractedTweets_new.csv')
 
     vocabulary = get_vocabulary(train_data)  # The set of words present in the training data
     label_counts = get_label_counts(train_data)
@@ -184,8 +187,8 @@ def main():
         evaluate(label_counts, word_counts, vocabulary, dev_data, 'dev', print_confusion_matrix=True)
     elif OPTS.evaluation_set == 'test':
         evaluate(label_counts, word_counts, vocabulary, test_data, 'test', print_confusion_matrix=True)
-    elif OPTS.evaluation_set == 'newbooks':
-        evaluate(label_counts, word_counts, vocabulary, newbooks_data, 'newbooks', print_confusion_matrix=True)
+    #elif OPTS.evaluation_set == 'newbooks':
+    #    evaluate(label_counts, word_counts, vocabulary, newbooks_data, 'newbooks', print_confusion_matrix=True)
 
 if __name__ == '__main__':
     OPTS = parse_args()
