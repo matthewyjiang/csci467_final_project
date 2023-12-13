@@ -22,11 +22,14 @@ convert_dict = {'Tweet': str,
 with open("../data/repfulltrain.txt") as f:
     for line in f:
         if(len(line.strip()) > 0):
+            # remove rt and @ from tweets
+            line = line.replace('rt', '')
             train_list.append([1, line.strip()])
         
 with open("../data/demfulltrain.txt") as f:
     for line in f:
         if(len(line.strip()) > 0):
+            line = line.replace('rt', '')
             train_list.append([0, line.strip()])
         
 data = pd.DataFrame(train_list, columns=['Party', 'Tweet'])
@@ -40,11 +43,13 @@ test_list = []
 with open("../data/repfullval.txt") as f:
     for line in f:
         if(len(line.strip()) > 0):
+            line = line.replace('rt', '')
             test_list.append([1, line.strip()])
         
 with open("../data/demfullval.txt") as f:
     for line in f:
         if(len(line.strip()) > 0):
+            line = line.replace('rt', '')
             test_list.append([0, line.strip()])
         
 test_data = pd.DataFrame(test_list, columns=['Party', 'Tweet'])

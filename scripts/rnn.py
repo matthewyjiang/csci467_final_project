@@ -1,132 +1,208 @@
 import pandas as pd
-import pandas as pd
-import numpy as np
+from torchtext.data.utils import get_tokenizer
+from collections import Counter
+from torchtext.vocab import Vocab
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
+from torchtext.vocab import vocab
 from tqdm import tqdm
+from glove_embedding import get_embeddings
 
-if torch.cuda.is_available():
-    device = "cuda:0"
-    print("Using GPU")
-else:
-    device = "cpu"
-    print("Using CPU")
-    
-    
-# embeddings_model = torch.load('embeddings_model.pt')
+# Functions for Data Loading and Preprocessing
+def load_data(file_path, fraction = 1.0):
+    df = pd.read_csv(file_path)
+    # Sample a fraction of the data randomly
+    df_sampled = df.sample(frac=fraction)
+    tweets = df_sampled['text'].tolist()
+    labels = df_sampled['label'].tolist()
+    return tweets, labels
 
-# Define dataset class
-class WordDataset(Dataset):
+# Function for Data Preprocessing
+def preprocess_data(tweets, labels, tokenizer, vocab_obj, max_length):
+    processed_data = []
+    pad_index = vocab_obj['<pad>']
+
+    for tweet, label in zip(tweets, labels):
+        tokenized_tweet = [vocab_obj[token] for token in tokenizer(tweet)]
+        if len(tokenized_tweet) < max_length:
+            tokenized_tweet += [pad_index] * (max_length - len(tokenized_tweet))
+        else:
+            tokenized_tweet = tokenized_tweet[:max_length]
+        processed_data.append((tokenized_tweet, label_pipeline(label)))
+    return processed_data
+# Function for Converting Text to Indices
+def text_pipeline(x, tokenizer, vocab):
+    stoi = vocab.get_stoi()  # Get the string-to-index mapping
+    return [stoi.get(token, stoi.get('<unk>')) for token in tokenizer(x)]  # Use '<unk>' index for unknown tokens
+
+def label_pipeline(x):
+    return int(x)
+
+# RNN Model Class
+class RNNClassifier(nn.Module):
+    def __init__(self, vocab_size, embed_dim, hidden_dim, linear_dim, output_dim):
+        super(RNNClassifier, self).__init__()
+        # vocab_npa, embs_npa, pad_emb_npa, unk_emb_npa = get_embeddings('../data/glove.twitter.27B.100d.txt')
+        # self.embedding = nn.Embedding.from_pretrained(torch.from_numpy(embs_npa).float(), padding_idx=0)
+        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        # self.rnn = nn.LSTM(embed_dim, hidden_dim, bidirectional=True, num_layers=2)
+        self.rnn = nn.LSTM(embed_dim, hidden_dim)
+        self.fc1 = nn.Linear(hidden_dim, linear_dim)
+        self.output_layer = nn.Linear(linear_dim, output_dim)
+        self.dropout = nn.Dropout(0.5)
+        self.relu = nn.ReLU()
+        self.sigmoid = nn.Sigmoid()
+    def forward(self, text):
+        # with torch.no_grad():
+        embedded = self.embedding(text)
+        output, (hidden, cell) = self.rnn(embedded)
+        # hidden = torch.cat((hidden[-2,:,:], hidden[-1,:,:]), dim=1)
+        hidden = hidden.squeeze(0)
+        out = self.fc1(hidden)
+        out = self.sigmoid(out)
+        out = self.dropout(out)
+        out = self.output_layer(out)
+        return out
+
+# Dataset Class
+class TweetDataset(Dataset):
     def __init__(self, data):
         self.data = data
-        self.word_to_idx = {}
-        self.idx_to_word = {}
-        self.vocab_size = 0
-        self.max_seq_len = 0
-        self._build_vocab()
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        words = self.data.iloc[idx]['Tweet'].split()
-        seq_len = len(words)
-        seq = [self.word_to_idx[word] for word in words]
-        seq += [0] * (self.max_seq_len - seq_len)
-        party = self.data.iloc[idx]['Party']
-        return torch.tensor(party, device=device), torch.tensor(seq, device=device), torch.tensor(seq_len, device=device)
+        tweet, label = self.data[idx]
+        return torch.tensor(tweet), torch.tensor(label)
 
-    def _build_vocab(self):
-        for i, row in self.data.iterrows():
-            print(row['Tweet'])
-            words = row['Tweet'].split()
-            self.max_seq_len = max(self.max_seq_len, len(words))
-            for word in words:
-                if word not in self.word_to_idx:
-                    self.word_to_idx[word] = self.vocab_size
-                    self.idx_to_word[self.vocab_size] = word
-                    self.vocab_size += 1
-                    
-    def sample(self, frac, random_state):
-        return self.data.sample(frac=frac, random_state=random_state)
+# Training Function
+def train_model(model, train_loader, test_loader, criterion, optimizer, num_epochs, vocab_obj):
+    for epoch in range(num_epochs):
+        model.train()
+        # Initialize the progress bar
+        progress_bar = tqdm(enumerate(train_loader), total=len(train_loader), desc=f'Epoch {epoch+1}/{num_epochs}')
+        for i, (texts, labels) in progress_bar:
+            texts, labels = texts.t(), labels.type(torch.FloatTensor)
+            optimizer.zero_grad()
+            output = model(texts)
+            loss = criterion(output.squeeze(1), labels)
+            loss.backward()
+            optimizer.step()
 
-# Define RNN model
-class LSTM(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, hidden_size, output_size):
-        super(LSTM, self).__init__()
-        self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        self.lstm = nn.LSTM(embedding_dim, hidden_size, batch_first=True)
-        self.fc = nn.Linear(hidden_size, output_size)
-        self.softmax = nn.Softmax(dim=1)
-
-    def forward(self, x, seq_len):
-        x = self.embedding(x)
-        packed = nn.utils.rnn.pack_padded_sequence(x, seq_len.cpu(), batch_first=True, enforce_sorted=False)
-        output, (h_n, c_n) = self.lstm(packed)
-        x = self.fc(h_n.squeeze(0))
-        return self.softmax(x)
-
-# Load data
-data = pd.read_csv('../data/train_set.csv', encoding='utf-8')
-data = data.sample(frac=0.01, random_state=42)
-dataset = WordDataset(data)
-
-# Define hyperparameters
-vocab_size = len(dataset.word_to_idx)
-embedding_dim = 48
-hidden_size = 64
-output_size = 2
-num_epochs = 10
-batch_size = 40
-
-# Split data into train and test sets
-train_data = dataset.sample(frac=0.8, random_state=42)
-
-dev_data = data.drop(train_data.index)
-test_data = dev_data.sample(frac=0.5, random_state=42)
-dev_data = dev_data.drop(test_data.index)
-
-# Create dataset and dataloader
-train_dataset = WordDataset(train_data)
-dev_dataset = WordDataset(dev_data)
-test_dataset = WordDataset(test_data)
-train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-dev_dataloader = DataLoader(dev_dataset, batch_size=batch_size, shuffle=False)
-test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
-model = LSTM(vocab_size, embedding_dim, hidden_size, output_size).to(device)
-optimizer = optim.Adam(model.parameters())
-
-loss_fn = nn.CrossEntropyLoss()
-
-for epoch in range(num_epochs):
-    model.train()
-    train_loss = 0
-    for batch_idx, (y, x, seq_len) in enumerate(tqdm(train_dataloader)):
-        optimizer.zero_grad()
-        
-        output = model(x, seq_len)
-        loss = loss_fn(output, y)
-        loss.backward()
-        optimizer.step()
-        train_loss += loss.item()
-
-    # Evaluate model
-    model.eval()
-    correct = 0
-    total = 0
-    class_counts = {}
-    with torch.no_grad():
-        for batch_idx, (y, x, seq_len) in enumerate(dev_dataloader):
-            output = model(x, seq_len)
-            _, predicted = torch.max(output, 1)
-
-            total += y.size(0)
-            correct += (predicted == y).sum().item()
+            # Update the progress bar with the loss information
+            progress_bar.set_postfix(loss=loss.item())
             
-    accuracy = 100 * correct / total
-    print('Epoch [{}/{}], Loss: {:.4f}, Test Accuracy: {:.2f}%'.format(epoch+1, num_epochs, train_loss/len(train_dataloader), accuracy))
-    # print how many times 1 and 0 were predicted
+        # evaluate the model on the train set
+        # train_acc = evaluate_model(model, test_loader, vocab_obj)
+        # print(f'Train Accuracy: {train_acc:.4f}')
+        
+def id_to_string(token_ids, vocab):
+    # Get the list of tokens from the vocabulary
+    tokens_list = vocab.get_itos()
+    pad_index = vocab['<pad>']
+    # Convert token ids to tokens while filtering out padding
+    return ' '.join(tokens_list[token_id] for token_id in token_ids if token_id != pad_index)
 
+def evaluate_model(model, test_loader, vocab):
+    model.eval()
+    total_acc, total_count = 0, 0
+    false_positives = []
+    false_negatives = []
+    
+    tp_count = 0
+    tn_count = 0
+    fp_count = 0
+    fn_count = 0
+
+    with torch.no_grad():
+        for texts, labels in test_loader:
+            texts, labels = texts.t(), labels
+            predicted = model(texts)
+            predicted = (predicted.squeeze(1) > 0).int()
+
+            total_acc += (predicted == labels).sum().item()
+            total_count += labels.size(0)
+
+            
+
+            # Analyze false positives and negatives
+            for i in range(len(labels)):
+                true_label = labels[i].item()
+                pred_label = predicted[i].item()
+                token_ids = texts[:, i].tolist()
+
+                if true_label == 0 and pred_label == 1:
+                    # False Positive
+                    false_positives.append((id_to_string(token_ids, vocab), true_label, pred_label))
+                    fp_count += 1
+                elif true_label == 1 and pred_label == 0:
+                    # False Negative
+                    false_negatives.append((id_to_string(token_ids, vocab), true_label, pred_label))
+                    fn_count += 1
+                elif true_label == 0 and pred_label == 0:
+                    # True Negative
+                    tn_count += 1
+                elif true_label == 1 and pred_label == 1:
+                    # True Positive
+                    tp_count += 1
+                    
+                    
+
+    # Save false positives and negatives
+    df_false_positives = pd.DataFrame(false_positives, columns=['Text', 'True Label', 'Predicted Label'])
+    df_false_negatives = pd.DataFrame(false_negatives, columns=['Text', 'True Label', 'Predicted Label'])
+
+    df_false_positives.to_csv( '_false_positives.csv', index=False)
+    df_false_negatives.to_csv('_false_negatives.csv', index=False)
+    
+    print(f'TP: {tp_count}')
+    print(f'TN: {tn_count}')
+    print(f'FP: {fp_count}')
+    print(f'FN: {fn_count}')
+    
+    return total_acc / total_count
+
+# Main Execution Block
+def main():
+    # Load data
+    print("loading data")
+    train_tweets, train_labels = load_data('../data/train_set.csv', fraction=1)
+    test_tweets, test_labels = load_data('../data/test_set.csv')
+    print("finish loading data")
+    # Tokenization and building vocabulary
+    tokenizer = get_tokenizer('basic_english')
+    counter = Counter()
+    for tweet in train_tweets:
+        counter.update(tokenizer(tweet))
+
+    # Create a vocabulary object
+    vocab_obj = vocab(counter)
+
+    # Add special tokens
+    vocab_obj.insert_token('<pad>', 0)
+    vocab_obj.insert_token('<unk>', 1)
+    vocab_obj.set_default_index(vocab_obj['<unk>'])
+
+    # Set maximum length for tokenized tweets
+    max_length = 50  # Choose an appropriate value based on your dataset
+
+    # Preprocess data
+    train_data = preprocess_data(train_tweets, train_labels, tokenizer, vocab_obj, max_length)
+    test_data = preprocess_data(test_tweets, test_labels, tokenizer, vocab_obj, max_length)
+
+    # Build model and dataloaders
+    model = RNNClassifier(len(vocab_obj), 100, 24, 24, 1)
+    train_loader = DataLoader(TweetDataset(train_data), batch_size=32, shuffle=True)
+    test_loader = DataLoader(TweetDataset(test_data), batch_size=32, shuffle=False)
+
+    # Train and evaluate the model
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = torch.optim.Adam(model.parameters())
+    train_model(model, train_loader, test_loader, criterion, optimizer, 5, vocab_obj)
+    accuracy = evaluate_model(model, test_loader, vocab_obj)
+    print(f'Test Accuracy: {accuracy:.4f}')
+
+if __name__ == "__main__":
+    main()
