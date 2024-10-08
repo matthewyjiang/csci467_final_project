@@ -1,4 +1,4 @@
-# Classifying Poltical Sentiment on Tweet Samples
+# Classifying Political Sentiment on Tweet Samples
 
 CSCI467 Final Project by Matthew Jiang, Haohan Zhang, Yikai Yang
 
